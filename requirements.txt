@@ -1,5 +1,3 @@
-requests
+streamlit==1.28.0
 pandas
-streamlit
-urllib3
-altair
+altair==4.2.2
