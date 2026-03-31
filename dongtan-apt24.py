@@ -8,12 +8,12 @@ import urllib3
 
 # --- [필수] 설정 ---
 pd.set_option("styler.render.max_elements", 5000000)
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+# urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning) 삭제제
 
 # --- 1. 설정 및 캐시 관리 ---
 st.set_page_config(page_title="동탄 실거래가 V44 (해제거래 포함)", layout="wide")
 CACHE_FILE = "dongtan_cache_all_v44.csv"
-st.title("📊 동탄APT 실시간 매매분석 개발자:안재현")
+st.title("📊 동탄 실거래가 정밀 분석 (해제거래 표시 및 신고가 제외)")
 
 # --- 2. 데이터 수집 엔진 ---
 @st.cache_data(show_spinner=False)
@@ -24,7 +24,7 @@ def fetch_all_data():
         except:
             pass
 
-    service_key = "d0d96cc8b346473b0da1e093e53422254c6d6965636596bb9dba3b9e1f3f340c"
+    service_key = st.secrets["SERVICE_KEY"]
     url = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
     lawd_cd = "41597"
 
@@ -40,7 +40,7 @@ def fetch_all_data():
         progress_bar.progress((i + 1) / 72)
         params = {'serviceKey': service_key, 'LAWD_CD': lawd_cd, 'DEAL_YMD': month, 'numOfRows': '2000'}
         try:
-            res = requests.get(url, params=params, verify=False, timeout=20)
+            res = requests.get(url, params=params, verify=True, timeout=20)
             if res.status_code == 200:
                 root = ET.fromstring(res.content)
                 for item in root.findall('.//item'):
