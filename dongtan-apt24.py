@@ -11,9 +11,9 @@ pd.set_option("styler.render.max_elements", 5000000)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- 1. 설정 및 캐시 관리 ---
-st.set_page_config(page_title="동탄 실거래가 V43", layout="wide")
-CACHE_FILE = "dongtan_cache_all_v43.csv"
-st.title("📊 동탄 실거래가 정밀 분석 (Cloud 대응 버전)")
+st.set_page_config(page_title="동탄 실거래가 V44 (해제거래 포함)", layout="wide")
+CACHE_FILE = "dongtan_cache_all_v44.csv"
+st.title("📊 동탄 실거래가 정밀 분석 (해제거래 표시 및 신고가 제외)")
 
 # --- 2. 데이터 수집 엔진 ---
 @st.cache_data(show_spinner=False)
@@ -24,7 +24,6 @@ def fetch_all_data():
         except:
             pass
 
-    # API 키 (GitHub Secrets 등을 사용하지 않을 경우 직접 입력 확인 필요)
     service_key = "d0d96cc8b346473b0da1e093e53422254c6d6965636596bb9dba3b9e1f3f340c"
     url = "https://apis.data.go.kr/1613000/RTMSDataSvcAptTradeDev/getRTMSDataSvcAptTradeDev"
     lawd_cd = "41597"
@@ -37,12 +36,11 @@ def fetch_all_data():
     status_text = st.empty()
 
     for i, month in enumerate(months):
-        status_text.text(f"🔍 데이터 수집 중: {month} ({i + 1}/72)")
+        status_text.text(f"🔍 동탄 데이터 전수 수집 중: {month} ({i + 1}/72)")
         progress_bar.progress((i + 1) / 72)
         params = {'serviceKey': service_key, 'LAWD_CD': lawd_cd, 'DEAL_YMD': month, 'numOfRows': '2000'}
         try:
-            # timeout을 늘려 클라우드 지연 대응
-            res = requests.get(url, params=params, verify=False, timeout=30)
+            res = requests.get(url, params=params, verify=False, timeout=20)
             if res.status_code == 200:
                 root = ET.fromstring(res.content)
                 for item in root.findall('.//item'):
@@ -58,15 +56,13 @@ def fetch_all_data():
                         '계약일자': f"{item.findtext('dealYear')}-{item.findtext('dealMonth').zfill(2)}-{item.findtext('dealDay').zfill(2)}",
                         '해제사유발생일': (item.findtext('cdealDay') or "").strip()
                     })
-        except Exception as e:
+        except:
             continue
 
-    if not all_data:
-        return pd.DataFrame()
-
     df = pd.DataFrame(all_data)
-    df = df.drop_duplicates().reset_index(drop=True)
-    df.to_csv(CACHE_FILE, index=False)
+    if not df.empty:
+        df = df.drop_duplicates().reset_index(drop=True)
+        df.to_csv(CACHE_FILE, index=False)
     status_text.empty()
     progress_bar.empty()
     return df
@@ -84,10 +80,10 @@ else:
 # --- 4. 분석 엔진 ---
 df = fetch_all_data()
 
-# [핵심 방어 로직] 데이터프레임이 비어있는지 먼저 확인
 if df is not None and not df.empty:
-    clean_df = df[df['해제사유발생일'].isna() | (df['해제사유발생일'] == "")].copy()
-
+    # [핵심] 1위, 2위 순위 계산은 '해제되지 않은' 데이터로만 수행
+    valid_df = df[df['해제사유발생일'].isna() | (df['해제사유발생일'] == "")].copy()
+    
     def get_rank_prices(group):
         sorted_prices = group.sort_values(by='거래금액_숫자', ascending=False)
         rank1_row = sorted_prices.iloc[0]
@@ -99,16 +95,22 @@ if df is not None and not df.empty:
             '역사2위_일': rank2_row['계약일자']
         })
 
-    if not clean_df.empty:
-        rank_df = clean_df.groupby(['아파트명', '전용면적']).apply(get_rank_prices, include_groups=False).reset_index()
-        clean_df = pd.merge(clean_df, rank_df, on=['아파트명', '전용면적'], how='left')
+    if not valid_df.empty:
+        rank_df = valid_df.groupby(['아파트명', '전용면적']).apply(get_rank_prices, include_groups=False).reset_index()
+        # 원본 데이터(df)에 순위 정보를 붙임 (해제된 거래도 순위 비교는 가능하게 함)
+        df = pd.merge(df, rank_df, on=['아파트명', '전용면적'], how='left')
 
-        clean_df['1위대비 2위'] = (clean_df['역사2위_가'] / clean_df['역사1위_가'] * 100).fillna(0)
-        clean_df = clean_df.sort_values(by=['아파트명', '전용면적', '계약일자'])
-        clean_df['직전거래금액_숫자'] = clean_df.groupby(['아파트명', '전용면적'])['거래금액_숫자'].shift(1)
-        clean_df['변화량_숫자'] = clean_df['거래금액_숫자'] - clean_df['직전거래금액_숫자']
+        # 1위 대비 2위 비율 계산 (분모 0 방지)
+        df['1위대비 2위'] = (df['역사2위_가'] / df['역사1위_가'] * 100).fillna(0)
 
-        p_df = clean_df[(clean_df['계약일자'] >= s_ymd) & (clean_df['계약일자'] <= e_ymd)].copy()
+        # 직전거래 및 변화량 계산 (해당 아파트/타입별)
+        df = df.sort_values(by=['아파트명', '전용면적', '계약일자'])
+        # 직전거래는 해제되지 않은 정상 거래를 기준으로 볼 수도 있으나, 여기서는 흐름 파악을 위해 순차 계산
+        df['직전거래금액_숫자'] = df.groupby(['아파트명', '전용면적'])['거래금액_숫자'].shift(1)
+        df['변화량_숫자'] = df['거래금액_숫자'] - df['직전거래금액_숫자']
+
+        # 날짜 필터링
+        p_df = df[(df['계약일자'] >= s_ymd) & (df['계약일자'] <= e_ymd)].copy()
 
         if not p_df.empty:
             st.markdown("---")
@@ -122,38 +124,62 @@ if df is not None and not df.empty:
             filtered_by_apt = filtered_by_dong if sel_a == "전체단지 보기" else filtered_by_dong[filtered_by_dong['아파트명'] == sel_a]
 
             with f3:
-                # [오류 해결 포인트] filtered_by_apt에 컬럼이 있는지 확인 후 추출
-                if '전용면적' in filtered_by_apt.columns:
-                    area_list = sorted(filtered_by_apt['전용면적'].unique().tolist())
-                else:
-                    area_list = []
-                sel_area = st.selectbox("📏 타입 선택", ["전체타입 보기"] + [f"{a}㎡" for a in area_list])
+                area_list = sorted(filtered_by_apt['전용면적'].unique().tolist())
+                sel_area = st.selectbox("📏 전용면적 선택", ["전체타입 보기"] + [f"{a}㎡" for a in area_list])
 
-            # 필터 적용
-            res = filtered_by_apt
-            if sel_area != "전체타입 보기":
-                target_area = float(sel_area.replace("㎡", ""))
-                res = filtered_by_apt[filtered_by_apt['전용면적'] == target_area]
+            res = filtered_by_apt if sel_area == "전체타입 보기" else filtered_by_apt[filtered_by_apt['전용면적'] == float(sel_area.replace("㎡", ""))]
 
             res = res.sort_values(by=['계약일자'], ascending=False).reset_index(drop=True)
             res.insert(0, '순번', range(1, len(res) + 1))
 
+            # 타입(평형) 변환 로직
             def format_type_pyeong(area):
                 py = round(area / 3.3 * 1.3)
                 return f"{int(area)}({py}평)"
             
             res['타입(평형)'] = res['전용면적'].apply(format_type_pyeong)
+
+            # 포맷팅
             res['거래금액'] = res['거래금액_숫자'].apply(lambda x: f"{int(x):,} 만원")
             res['직전거래금액'] = res['직전거래금액_숫자'].apply(lambda x: f"{int(x):,} 만원" if pd.notna(x) else "-")
-            res['역사적 1위(최고)'] = res.apply(lambda x: f"{int(x['역사1위_가']):,} 만원 ({x['역사1위_일']})", axis=1)
+            res['역사적 1위(최고)'] = res.apply(lambda x: f"{int(x['역사1위_가']):,} 만원 ({x['역사1위_일']})" if pd.notna(x['역사1위_가']) else "-", axis=1)
+            res['2위금액'] = res.apply(lambda x: f"{int(x['역사2위_가']):,} 만원 ({x['역사2위_일']})" if pd.notna(x['역사2위_가']) else "-", axis=1)
             res['변화량'] = res['변화량_숫자'].apply(lambda x: f"+{int(x):,} 만원" if x > 0 else (f"{int(x):,} 만원" if x < 0 else "0 만원") if pd.notna(x) else "-")
 
-            f_cols = ['순번', '해당동', '아파트명', '타입(평형)', '층', '거래금액', '변화량', '직전거래금액', '계약일자']
+            # 특징 부여 (해제 거래 우선 표시)
+            def get_feature(row):
+                if pd.notna(row['해제사유발생일']) and row['해제사유발생일'] != "":
+                    return '❌ 계약해제'
+                if row['거래금액_숫자'] >= row['역사1위_가']: return '💎 전고돌파'
+                if row['거래금액_숫자'] >= row['역사2위_가']: return '🥈 2위돌파'
+                return ''
+            res['특징'] = res.apply(get_feature, axis=1)
 
-            st.dataframe(res[f_cols], height=700, use_container_width=True, hide_index=True)
+            # 컬럼 순서
+            f_cols = ['순번', '해당동', '아파트명', '타입(평형)', '층', '거래금액', '변화량', '특징', '1위대비 2위', '2위금액', '역사적 1위(최고)', '계약일자']
+
+            # 스타일 적용
+            def style_rows(row):
+                if row['특징'] == '❌ 계약해제':
+                    return ['color: #adb5bd; text-decoration: line-through;'] * len(row) # 해제건은 회색+취소선
+                return [''] * len(row)
+
+            st.dataframe(
+                res[f_cols].style.apply(style_rows, axis=1)
+                .map(lambda v: 'color: red; font-weight: bold;' if str(v).startswith('+') else ('color: blue; font-weight: bold;' if str(v).startswith('-') and len(str(v)) > 1 else ''), subset=['변화량'])
+                .map(lambda v: 'color: #ff4b4b; font-weight: bold;' if v == '❌ 계약해제' else ('color: #ffa500; font-weight: bold;' if v == '💎 전고돌파' else ''), subset=['특징'])
+                .map(lambda v: 'color: red; font-weight: bold;' if isinstance(v, (int, float)) and v >= 100 else '', subset=['1위대비 2위']),
+                column_config={
+                    "1위대비 2위": st.column_config.ProgressColumn(
+                        "1위대비 2위 (%)",
+                        format="%.1f%%",
+                        min_value=0,
+                        max_value=100
+                    )
+                },
+                height=700, use_container_width=True, hide_index=True
+            )
         else:
-            st.warning("⚠️ 선택한 기간에 실거래 내역이 없습니다.")
-    else:
-        st.warning("⚠️ 유효한 거래 데이터를 찾을 수 없습니다.")
+            st.warning("해당 기간 내에 거래 데이터가 없습니다.")
 else:
-    st.error("❌ 데이터를 불러오지 못했습니다. API 키나 서버 연결을 확인하세요.")
+    st.error("데이터 수집에 실패했거나 데이터가 비어있습니다.")
