@@ -13,7 +13,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # --- 1. 설정 및 캐시 관리 ---
 st.set_page_config(page_title="동탄 실거래가 V44 (해제거래 포함)", layout="wide")
 CACHE_FILE = "dongtan_cache_all_v44.csv"
-st.title("📊 동탄 실거래가 정밀 분석 (해제거래 표시 및 신고가 제외)")
+st.title("📊 동탄APT 실시간 매매분석 개발자:안재현")
 
 # --- 2. 데이터 수집 엔진 ---
 @st.cache_data(show_spinner=False)
